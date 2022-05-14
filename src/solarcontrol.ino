@@ -53,7 +53,7 @@ void loop() {
 
   int light = analogRead( LIGHT_SENSOR_INPUT );
 
-  int epoch = rtc.now().unixtime();
+  uint32_t epoch = rtc.now().unixtime();
 
   lcd.clear();
   lcd.setCursor( 0, 0 );
