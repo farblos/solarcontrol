@@ -159,7 +159,7 @@ void loop()
 
   case WAITING:
     if ( waitc > 0 ) {
-      waitc -= light / 128;
+      waitc -= light / 64;
     }
     else {
       state = PUMPING;
