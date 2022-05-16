@@ -11,8 +11,8 @@ AVR_TOOLS_PATH :=	/bin
 AVRDUDE_CONF :=		/etc/avrdude.conf
 
 # board configuration
-BOARD_TAG :=		nano			# arduino nano ...
-BOARD_SUB :=		atmega328old		# ... with old boot loader
+BOARD_TAG :=		nano
+BOARD_SUB :=		atmega328
 
 # sketch configuration.  Must specify these explicitly since the
 # automatic library detection of Arduino.mk does not work
