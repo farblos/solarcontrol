@@ -12,10 +12,11 @@ Gründe für dieses Vorgehen:
 - Eine längerfristig geplante Sanierung des Daches mit dann
   vollständigem Austausch der Solaranlage
 
-Im Folgenden bezeichnet "bestehend" alles, was ich im Haus
-vorgefunden habe, und den Solarspeicher, der von meinem
-Installateur installiert wurde.  Dagegen bezeichnet "neu" die
-Komponenten der Steuerung durch den Arduino Nano.
+Im Folgenden bezeichnet "bestehend" alle Komponenten, die ich mit
+dem Haus vom Vorbesitzer übernommen habe, und den Solarspeicher,
+der von meinem Installateur installiert wurde.  Dagegen
+bezeichnet "neu" die Komponenten der Steuerung durch den Arduino
+Nano.
 
 ## Beschreibung der bestehenden Anlage
 
@@ -38,8 +39,8 @@ installiert.
   2 Module Hitachi Solar Collector Type SK-21D in
   Ost-West-Ausrichtung auf der Südseite des Daches
 
-  Keine Referenzen gefunden, sind Vakuumröhrenkollektoren.  Die
-  bisher mit den neuen Temperatursensoren maximal gemessene
+  Keine Referenzen gefunden, sollen Vakuumröhrenkollektoren sein.
+  Die bisher mit den neuen Temperatursensoren maximal gemessene
   Temperatur am Vorlauf betrug knapp 80°C.
 
 - **Wärmemedium**
@@ -96,3 +97,8 @@ installiert.
   Zum Dach führt eine zwei-adrige (Lautsprecher?)-Leitung hoch,
   an die die Fotodiode angeschlossen ist.  Nachträglich weitere
   Leitungen zu verlegen ist wahrscheinlich eher schwierig.
+
+Hier ist der Kern der Anlage mit Pumpe, Bypasszweig und -ventil
+zu sehen, oben im Bild der erste Prototyp der neuen Steuerung:
+
+![Kern der Anlage](https://github.com/farblos/solarcontrol/blob/main/assets/dsc_0010.jpg?raw=true)
