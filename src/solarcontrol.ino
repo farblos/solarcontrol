@@ -49,17 +49,15 @@ void onbutton()
   unsigned long its = millis();
 
   // if interrupts come too fast assume that they are caused by
-  // bounces and ignore them.  It seems that the delay in the
-  // main loop does not flush (implicitly nor explicitly) pending
-  // interrupts caused by bounces, so the timespan used here has
-  // to be significantly larger than the delay.
-  if ( its - lits > 10000 ) {
+  // bounces and ignore them
+  if ( its - lits > 200 ) {
     switch ( state ) {
     case STARTING:
       break;
 
     case FORCE_ON:
-      state = FORCE_OFF;
+      state = WAITING;
+      waitc = WAIT_INIT;
       break;
 
     case FORCE_OFF:
@@ -68,11 +66,11 @@ void onbutton()
       break;
 
     case WAITING:
-      state = FORCE_ON;
+      state = FORCE_OFF;
       break;
 
     case PUMPING:
-      state = FORCE_OFF;
+      state = FORCE_ON;
       break;
     }
 
@@ -112,6 +110,7 @@ void setup()
   lcd.begin( 16,2 );
 
   rtc.begin();
+  // below macros expand to local time, not UTC!
   rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
 
   SD.begin();
@@ -120,7 +119,7 @@ void setup()
   // interrupt to it
   pinMode( PUMP_BUTTON_INPUT, INPUT_PULLUP );
   attachInterrupt( digitalPinToInterrupt( PUMP_BUTTON_INPUT ),
-                   onbutton, RISING );
+                   onbutton, FALLING );
 
   // initialize pump relais MOS-FET
   pinMode( AUX_RELAIS_OUTPUT, OUTPUT );
