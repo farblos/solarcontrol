@@ -24,8 +24,10 @@ ARDUINO_LIBS :=					\
 			NewliquidCrystal	\
 			OneWire			\
 			RTClib			\
-			SD			\
+			SdFat			\
 			SPI			\
 			Wire
+
+CPPFLAGS += $(USER_DEFINES)
 
 include /usr/share/arduino/Arduino.mk
