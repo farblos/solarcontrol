@@ -6,7 +6,7 @@
 # Arduino version right.
 ARDUINO_DIR :=		/usr/share/arduino
 ARDUINO_VERSION :=	$(shell cat $(ARDUINO_DIR)/lib/version.txt | \
-				sed 's/^[0-9]://;s/\.\([0-9]\)\([^0-9]\)/.0\1\2/g;s/\.//g;s/\+.*//')
+			        sed 's/^[0-9]://;s/\.\([0-9]\)\([^0-9]\)/.0\1\2/g;s/\.//g;s/\+.*//')
 AVR_TOOLS_PATH :=	/bin
 AVRDUDE_CONF :=		/etc/avrdude.conf
 
@@ -24,10 +24,11 @@ ARDUINO_LIBS :=					\
 			NewliquidCrystal	\
 			OneWire			\
 			RTClib			\
-			SdFat			\
 			SPI			\
+			SdFat			\
 			Wire
 
+# commandline configuration
 CPPFLAGS += $(USER_DEFINES)
 
-include /usr/share/arduino/Arduino.mk
+include $(ARDUINO_DIR)/Arduino.mk
