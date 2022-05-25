@@ -12,9 +12,11 @@
 #include <avr/wdt.h>
 
 #ifdef DEBUG
-#define debug( message ) Serial.println( message );
+#define debugln( message )       Serial.println( message )
+#define debugnm( message, base ) Serial.println( message, base )
 #else
-#define debug( message )
+#define debugln( message )
+#define debugnm( message, base )
 #endif
 
 //{{{ miscellaneous constants
@@ -31,7 +33,7 @@
 
 // number of cycles to wait before checking supply flow
 // temperature when pumping
-#define INIT_PUMP_CYCLES        150
+#define INIT_PUMP_CYCLES        120
 
 // minimum temperature difference between supply flow temperature
 // and tank temperature in centidegrees Celsius to keep the pump
@@ -52,8 +54,7 @@
 // interrupts.
 #define INPUT_LIGHT_SENSOR      A0
 #define INPUT_CONTROL_BUTTON    2
-#define INOUT_ONE_WIRE          5
-#define OUTPUT_ERROR_LED        6
+#define INOUT_ONE_WIRE          6
 #define OUTPUT_PUMP_RELAIS_N    7
 #define OUTPUT_PUMP_RELAIS_L    8
 #define OUTPUT_AUX_RELAIS       9
@@ -62,16 +63,99 @@
 
 //{{{ subsystem and error constants and variables
 
-#define SUBSYS_SENSORS          1
-#define SUBSYS_LCD              2
-#define SUBSYS_RTC              4
-#define SUBSYS_SD               8
+#define SUBSYS_SENSORS          0x0001
+#define SUBSYS_LCD              0x0002
+#define SUBSYS_RTC              0x0004
+#define SUBSYS_SD               0x0008
 
-#define fail( subsys ) (error |= subsys)
+// critical subsystems, the failure of which results in the error
+// state
+#define SUBSYS_CRITICAL         SUBSYS_SENSORS
 
-#define okp( subsys )  (! (error & subsys))
+#define SUBSYS_MASK             0x000f
 
-byte error = 0;
+#define SDLOC_WRITE             0x0010
+#define SDLOC_CLOSE             0x0020
+#define SDLOC_OPEN              0x0030
+#define SDLOC_SYNC              0x0040
+#define SDLOC_INIT_BEGIN        0x0050
+#define SDLOC_INIT_CHDIR        0x0060
+#define SDLOC_INIT_OPEN_READ    0x0070
+#define SDLOC_INIT_STAT         0x0080
+#define SDLOC_INIT_CLOSE        0x0090
+#define SDLOC_INIT_OPEN_WRITE   0x00a0
+
+#define SDLOC_MASK              0x0ff0
+
+#define okp( subsys )  (! (fldss & subsys))
+
+uint8_t fldss = 0;
+
+#define MSGID_ERROR             0x0e
+#define MSGID_SD_ERROR          0x0f
+
+#define MSGID_MASK              0x0f
+
+#define MESSAGE_MASK            0x0fff
+
+// message ring size.  Should be larger than one for the message
+// ring to be useful.
+#define MESSAGE_RING_SIZE       4
+
+// message ring
+uint16_t mring[MESSAGE_RING_SIZE] = { 0 };
+
+// message ring write pointer.  Always smaller than
+// MESSAGE_RING_SIZE.
+byte mrwrp = 0;
+
+// message ring maximum pointer.  Always smaller than or equal to
+// MESSAGE_RING_SIZE.  Ahead by one compared to the write pointer
+// as long as it does not equal MESSAGE_RING_SIZE.
+byte mrmxp = 1;
+
+// message ring read pointer.  Always smaller than the message
+// ring maximum pointer.
+byte mrrdp = 0;
+
+// report an error of the specified subsystem
+#define error( subsys )                                                 \
+  error0( MSGID_ERROR, subsys );
+
+// report an error of the SD card subsystem
+#define sderr( sdloc ) {                                                \
+  error0( MSGID_ERROR,    SUBSYS_SD | sdloc );                          \
+  error0( MSGID_SD_ERROR, lfidx << 8 | sd.card()->errorCode() );        \
+}
+
+void error0( uint8_t msgid, uint16_t msgvl )
+{
+  debugnm( (uint16_t)((msgid & MSGID_MASK) << 12) | (msgvl & MESSAGE_MASK), HEX );
+
+  // fail the corresponding subsystem if this is a regular error
+  if ( (msgid == MSGID_ERROR) )
+    fldss |= (msgvl & SUBSYS_MASK);
+
+  // store message ID and value in message ring
+  mring[mrwrp++] = ((msgid & MSGID_MASK) << 12) | (msgvl & MESSAGE_MASK);
+
+  // wrap over pointer, if needed
+  if ( mrwrp == MESSAGE_RING_SIZE ) mrwrp = 0;
+
+  // zero the following element in the message ring as wrap-over
+  // marker
+  mring[mrwrp] = 0;
+
+  if ( mrmxp < MESSAGE_RING_SIZE )
+    mrmxp++;
+}
+
+uint32_t crmsg()
+{
+  uint32_t msg = mring[mrrdp++];
+  if ( mrrdp == mrmxp ) mrrdp = 0;
+  return msg;
+}
 
 //}}}
 
@@ -97,13 +181,12 @@ void ocbtnp()                                   // on-control-button-pressed
 
 #define STATE_STARTING          '^'
 #define STATE_ERROR             '!'
-#define STATE_FORCE_ON          '1'
-#define STATE_FORCE_OFF         '0'
+#define STATE_FORCE_ON          '+'
+#define STATE_FORCE_OFF         '-'
 #define STATE_PUMPING           '@'
 #define STATE_WAITING           '*'
 
 char state;
-bool ledon;
 int  ltlvl;
 int  pumpc;
 
@@ -115,10 +198,6 @@ void setstate( char newstate )
   state = newstate;
 
   switch ( state ) {
-  case STATE_ERROR:
-    ledon = true;
-    break;
-
   case STATE_PUMPING:
     pumpc = INIT_PUMP_CYCLES;
     break;
@@ -150,7 +229,9 @@ int getTemp( const DeviceAddress sensor )
     return (float)raw * 0.78125;
   }
   else {
-    fail( SUBSYS_SENSORS );
+    // report an error only if that has not be done before
+    if ( okp( SUBSYS_SENSORS ) )
+      error( SUBSYS_SENSORS );
     return -1000;
   }
 }
@@ -233,25 +314,25 @@ void updtlog( int temps, int tempr, int tempt, int light )
   lfile.print( "," );
   lfile.print( light );
   lfile.print( "," );
-  lfile.print( (state == STATE_WAITING) ? ltlvl : 0 );
-  lfile.print( "," );
   lfile.print( (state == STATE_PUMPING) ? pumpc : 0 );
   lfile.print( "," );
-  lfile.print( error );
+  lfile.print( (state == STATE_WAITING) ? ltlvl : 0 );
+  lfile.print( "," );
+  lfile.print( fldss );
   lfile.println();
 
   if ( lfile.getWriteError() ) {
     lfile.clearWriteError();
-    fail( SUBSYS_SD );
-    debug( "Cannot write to log file." );
+    sderr( SDLOC_WRITE );
+    debugln( "Cannot write to log file." );
   }
 
   uint32_t lfsz = lfile.fileSize();
   if ( lfsz > LOG_FILE_MAXSIZE ) {
     // switch to next log file
     if ( (! lfile.close() ) ) {
-      fail( SUBSYS_SD );
-      debug( "Cannot close log file after writing." );
+      sderr( SDLOC_CLOSE );
+      debugln( "Cannot close log file after writing." );
     }
     if ( lfidx == 9 )
       lfidx = 0;
@@ -259,8 +340,8 @@ void updtlog( int temps, int tempr, int tempt, int light )
       lfidx++;
     if ( (okp( SUBSYS_SD )) &&
          (! lfile.open( lfn( lfidx ), O_WRITE | O_TRUNC | O_APPEND ) ) ) {
-      fail( SUBSYS_SD );
-      debug( "Cannot open next log file for writing." );
+      sderr( SDLOC_OPEN );
+      debugln( "Cannot open next log file for writing." );
     }
     lfssz = 0;
   }
@@ -268,8 +349,8 @@ void updtlog( int temps, int tempr, int tempt, int light )
     // sync log file if unsynched delta gets too large
     if ( (okp( SUBSYS_SD )) &&
          (! lfile.sync() ) ) {
-      fail( SUBSYS_SD );
-      debug( "Cannot sync log file." );
+      sderr( SDLOC_SYNC );
+      debugln( "Cannot sync log file." );
     }
     lfssz = lfsz;
   }
@@ -284,30 +365,87 @@ void updtlog( int temps, int tempr, int tempt, int light )
 
 //{{{ updtlcd
 
+void lcddec( char row[], byte pos, char ind, int val )
+{
+  row[pos++] = ind;
+  if ( val < -999 ) {
+    row[pos++] = '-';
+    row[pos++] = '-';
+    row[pos++] = '-';
+    row[pos++] = '-';
+  }
+  else if ( val < 0 ) {
+    row[pos++] = '-';                val = -val;
+    row[pos++] = '0' + (val /  100); val = val %  100;
+    row[pos++] = '0' + (val /   10); val = val %   10;
+    row[pos++] = '0' + (val);
+  }
+  else if ( 9999 < val ) {
+    row[pos++] = '+';
+    row[pos++] = '+';
+    row[pos++] = '+';
+    row[pos++] = '+';
+  }
+  else {
+    row[pos++] = '0' + (val / 1000); val = val % 1000;
+    row[pos++] = '0' + (val /  100); val = val %  100;
+    row[pos++] = '0' + (val /   10); val = val %   10;
+    row[pos++] = '0' + (val);
+  }
+}
+
+void lcdhex( char row[], byte pos, char ind, uint16_t val )
+{
+  uint8_t digit;
+  row[pos++] = ind;
+  digit = val >> 12; val &= 0x0fff; row[pos++] = (digit < 10) ? '0' + digit : 'a' + digit - 10;
+  digit = val >>  8; val &= 0x00ff; row[pos++] = (digit < 10) ? '0' + digit : 'a' + digit - 10;
+  digit = val >>  4; val &= 0x000f; row[pos++] = (digit < 10) ? '0' + digit : 'a' + digit - 10;
+  digit = val >>  0;                row[pos++] = (digit < 10) ? '0' + digit : 'a' + digit - 10;
+}
+
 // (incomplete)
 void updtlcd( int temps, int tempr, int tempt, int light )
 {
   if ( (! okp( SUBSYS_LCD )) )
     return;
 
+  char row[17];
+  row[16] = '\0';
+
+  // format: "sNNNNrNNNNcNNNNs"
+  lcddec( row,  0, 's', temps );
+  lcddec( row,  5, 'r', tempr );
+  if ( (state == STATE_PUMPING) )
+  lcddec( row, 10, 'c', pumpc );
+  else if ( (state == STATE_WAITING) )
+  lcddec( row, 10, 'c', ltlvl );
+  else
+  lcddec( row, 10, 'c', 0 );
+          row[ 15] = state;
   lcd.setCursor( 0, 0 );
-  lcd.print( "V" );
-  lcd.print( temps );
-  lcd.print( " " );
-  lcd.print( "R" );
-  lcd.print( tempr );
-  lcd.setCursor( 15, 0 );
-  lcd.print( state );
+  lcd.print( row );
+
+  uint16_t msg = crmsg();
+
+  // format: "tNNNNlNNNNeNNNN "
+  lcddec( row,  0, 't', tempt );
+  lcddec( row,  5, 'l', light );
+  if ( (msg == 0) ) {
+          row[ 10] = ' ';
+          row[ 11] = ' ';
+          row[ 12] = ' ';
+          row[ 13] = ' ';
+          row[ 14] = ' ';
+  lcd.noBacklight();
+  }
+  else {
+  lcdhex( row, 10, 'e', msg );
+  lcd.backlight();
+  }
+          row[ 15] = ' ';
   lcd.setCursor( 0, 1 );
-  lcd.print( "S" );
-  lcd.print( tempt );
-  lcd.print( " " );
-  lcd.print( "L" );
-  lcd.print( light );
-  lcd.print( " " );
-  lcd.print( " " );
-  lcd.setCursor( 15, 1 );
-  lcd.print( error );
+  lcd.print( row );
 }
 
 //}}}
@@ -334,8 +472,8 @@ void setup()
     sensors.setResolution( 12 );
   }
   else {
-    fail( SUBSYS_SENSORS );
-    debug( "Cannot initialize sensor." );
+    error( SUBSYS_SENSORS );
+    debugln( "Cannot initialize sensor." );
   }
 
   // initialize LCD
@@ -346,8 +484,8 @@ void setup()
     lcd.noBacklight();
   }
   else {
-    fail( SUBSYS_LCD );
-    debug( "Cannot initialize LCD." );
+    error( SUBSYS_LCD );
+    debugln( "Cannot initialize LCD." );
   }
 
   // initialize RTC
@@ -355,21 +493,21 @@ void setup()
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
   else {
-    fail( SUBSYS_RTC );
-    debug( "Cannot initialize RTC." );
+    error( SUBSYS_RTC );
+    debugln( "Cannot initialize RTC." );
   }
 
   // initialize SD card and change to log directory
   SdFile::dateTimeCallback( rtc2sd );
   if ( (okp( SUBSYS_SD )) &&
        (! sd.begin( SS, SPI_HALF_SPEED )) ) {
-    fail( SUBSYS_SD );
-    debug( "Cannot initialize SD." );
+    sderr( SDLOC_INIT_BEGIN );
+    debugln( "Cannot initialize SD." );
   }
   if ( (okp( SUBSYS_SD )) &&
        (! sd.chdir( LOG_DIR_NAME )) ) {
-    fail( SUBSYS_SD );
-    debug( "Cannot change to log directory." );
+    sderr( SDLOC_INIT_CHDIR );
+    debugln( "Cannot change to log directory." );
   }
 
   // ensure all log files exist and determine most recent one
@@ -379,19 +517,19 @@ void setup()
   for ( byte i = 0; i < 10; i++ ) {
     if ( (okp( SUBSYS_SD )) &&
          (! lfile.open( lfn( i ), O_READ )) ) {
-      fail( SUBSYS_SD );
-      debug( "Cannot open log file for reading." );
+      sderr( SDLOC_INIT_OPEN_READ );
+      debugln( "Cannot open log file for reading." );
     }
     uint16_t pdate = 0;
     uint16_t ptime = 0;
     if ( (okp( SUBSYS_SD )) &&
          (! lfile.getModifyDateTime( &pdate, &ptime )) ) {
-      fail( SUBSYS_SD );
-      debug( "Cannot determine modification timestamp." );
+      sderr( SDLOC_INIT_STAT );
+      debugln( "Cannot determine modification timestamp." );
     }
     if ( (! lfile.close() ) ) {
-      fail( SUBSYS_SD );
-      debug( "Cannot close log file after reading." );
+      sderr( SDLOC_INIT_CLOSE );
+      debugln( "Cannot close log file after reading." );
     }
     if ( (pdate > mrpdate) ||
          ((pdate == mrpdate) && (ptime > mrptime)) ) {
@@ -405,8 +543,8 @@ void setup()
   lfidx = mrlfidx;
   if ( (okp( SUBSYS_SD )) &&
        (! lfile.open( lfn( lfidx ), O_WRITE | O_APPEND )) ) {
-    fail( SUBSYS_SD );
-    debug( "Cannot open initial log file for writing." );
+    error( SDLOC_INIT_OPEN_WRITE );
+    debugln( "Cannot open initial log file for writing." );
   }
   if ( (okp( SUBSYS_SD )) ) {
     lfssz = lfile.fileSize();
@@ -414,10 +552,6 @@ void setup()
 
   // activate internal pull-up on control button
   pinMode( INPUT_CONTROL_BUTTON, INPUT_PULLUP );
-
-  // initialize error LED
-  pinMode( OUTPUT_ERROR_LED, OUTPUT );
-  digitalWrite( OUTPUT_ERROR_LED, LOW );
 
   // initialize relais MOS-FETs
   pinMode( OUTPUT_PUMP_RELAIS_N, OUTPUT );
@@ -447,7 +581,7 @@ void loop()
   // determine new state
   switch ( state ) {
   case STATE_STARTING:
-    if ( error ) {
+    if ( (! okp( SUBSYS_CRITICAL )) ) {
       setstate( STATE_ERROR );
     }
     else if ( cbtnp ) {
@@ -463,12 +597,10 @@ void loop()
     break;
 
   case STATE_ERROR:
-    cbtnp = false;
-    ledon = ! ledon;
     break;
 
   case STATE_FORCE_ON:
-    if ( error ) {
+    if ( (! okp( SUBSYS_CRITICAL )) ) {
       setstate( STATE_ERROR );
     }
     else if ( cbtnp ) {
@@ -478,7 +610,7 @@ void loop()
     break;
 
   case STATE_FORCE_OFF:
-    if ( error ) {
+    if ( (! okp( SUBSYS_CRITICAL )) ) {
       setstate( STATE_ERROR );
     }
     else if ( cbtnp ) {
@@ -488,7 +620,7 @@ void loop()
     break;
 
   case STATE_WAITING:
-    if ( error ) {
+    if ( (! okp( SUBSYS_CRITICAL )) ) {
       setstate( STATE_ERROR );
     }
     else if ( cbtnp ) {
@@ -496,7 +628,15 @@ void loop()
       setstate( STATE_FORCE_OFF );
     }
     else if ( ltlvl > 0 ) {
-      ltlvl -= light / 64;
+      if ( false )
+        ; // alignment no-op
+      else if ( (okp( SUBSYS_SENSORS )) &&
+                (tempt >= 100) )
+        ltlvl -= light / (tempt / 100);
+      else if ( (okp( SUBSYS_SENSORS )) )
+        ltlvl -= light;
+      else
+        ltlvl -= light / 64;
       if ( ltlvl < 0 ) ltlvl = 0;
     }
     else {
@@ -505,7 +645,7 @@ void loop()
     break;
 
   case STATE_PUMPING:
-    if ( error ) {
+    if ( (! okp( SUBSYS_CRITICAL )) ) {
       setstate( STATE_ERROR );
     }
     else if ( cbtnp ) {
@@ -524,18 +664,9 @@ void loop()
   // update display right away after start-up
   updtlcd( temps, tempr, tempt, light );
 
-  // update log file only after start-up and if not in an error
-  // state
-  if ( (state != STATE_STARTING) && (state != STATE_ERROR) ) {
+  // update log file only after start-up
+  if ( (state != STATE_STARTING) ) {
     updtlog( temps, tempr, tempt, light );
-  }
-
-  // operate error LED depending on state
-  if ( (state == STATE_ERROR) && (ledon) ) {
-    digitalWrite( OUTPUT_ERROR_LED, HIGH );
-  }
-  else {
-    digitalWrite( OUTPUT_ERROR_LED, LOW );
   }
 
   // operate pump depending on state
