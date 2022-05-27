@@ -29,6 +29,9 @@ ARDUINO_LIBS :=					\
 			SdFat			\
 			Wire
 
+# enable SD card CRC checking for SPI
+CPPFLAGS +=		-DUSE_SD_CRC=2
+
 # provide a hook for specifying defines on the commandline
 CPPFLAGS +=		$(USER_DEFINES)
 
