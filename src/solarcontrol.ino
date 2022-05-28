@@ -269,9 +269,9 @@ void setstate( char newstate )
 //{{{ sensor items
 
 // supply flow, return flow, tank sensors
-const DeviceAddress SENSOR_SUPPLY PROGMEM = { 0x28, 0xaa, 0xac, 0xdb, 0x3c, 0x14, 0x01, 0xe6 };
-const DeviceAddress SENSOR_RETURN PROGMEM = { 0x28, 0xaa, 0xe9, 0x12, 0x3d, 0x14, 0x01, 0xdc };
-const DeviceAddress SENSOR_TANK   PROGMEM = { 0x28, 0xaa, 0x33, 0x11, 0x3d, 0x14, 0x01, 0xb7 };
+const DeviceAddress SENSOR_SUPPLY = { 0x28, 0xaa, 0xac, 0xdb, 0x3c, 0x14, 0x01, 0xe6 };
+const DeviceAddress SENSOR_RETURN = { 0x28, 0xaa, 0xe9, 0x12, 0x3d, 0x14, 0x01, 0xdc };
+const DeviceAddress SENSOR_TANK   = { 0x28, 0xaa, 0x33, 0x11, 0x3d, 0x14, 0x01, 0xb7 };
 
 OneWire onewire( INOUT_ONE_WIRE );
 
@@ -329,7 +329,7 @@ RTC_DS1307 rtc;
 //     test $i == 0 && sleep 2
 //     touch /media/usd00/solarlog/log$i.csv
 //   done
-const char LOG_DIR_NAME[] PROGMEM = "/solarlog";
+const char LOG_DIR_NAME[] = "/solarlog";
 
 // log file name, which is calculated from the log file template
 // and the specified log file index
