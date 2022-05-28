@@ -98,7 +98,8 @@ installiert.
   an die die Fotodiode angeschlossen ist.  Nachträglich weitere
   Leitungen zu verlegen ist wahrscheinlich eher schwierig.
 
-Hier ist der Kern der Anlage mit Pumpe, Bypasszweig und -ventil
-zu sehen, oben im Bild der erste Prototyp der neuen Steuerung:
+Hier ist der Kern der Anlage mit Pumpe, **V**orlauf,
+**R**ücklauf, **B**ypasszweig und -ventil zu sehen, oben im Bild
+der erste Prototyp der neuen Steuerung:
 
 ![Kern der Anlage](https://github.com/farblos/solarcontrol/blob/main/assets/dsc_0010.jpg?raw=true)
