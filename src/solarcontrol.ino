@@ -1,6 +1,18 @@
 //
 // solarcontrol.ino - new life for an old solar hot water system.
 //
+// Copyright (C) 2022  Jens Schmidt
+//
+// This program is free software: you can redistribute it and/or
+// modify it under the terms of the GNU General Public License as
+// published by the Free Software Foundation, either version 3 of
+// the License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be
+// useful, but WITHOUT ANY WARRANTY; without even the implied
+// warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+// PURPOSE.  See the GNU General Public License for more details.
+//
 
 #include <DallasTemperature.h>
 #include <LCD.h>
@@ -12,9 +24,11 @@
 #include <avr/wdt.h>
 
 #ifdef DEBUG
+#define debugnl( message )       Serial.print( message )
 #define debugln( message )       Serial.println( message )
 #define debugnm( message, base ) Serial.println( message, base )
 #else
+#define debugnl( message )
 #define debugln( message )
 #define debugnm( message, base )
 #endif
@@ -25,15 +39,26 @@
 // to not trigger the watchdog timer in regular operation.
 #define MAIN_DELAY              1000
 
-// debounce delay in ms
+// watchdog timeout to be passed to wdt_enable
+#define WATCHDOG_TIMEOUT        WDTO_8S
+
+// button debounce delay in ms
 #define DEBOUNCE_DELAY          200
 
-// light levels to accumulate before starting pump
-#define INIT_LIGHT_LEVEL        3000
+// number of cycles to wait before starting regular operation
+#define START_CYCLES            10
+
+// minimum number of light levels to accumulate before starting
+// pump
+#define PUMP_LIGHT_LEVEL        3000
 
 // number of cycles to wait before checking supply flow
 // temperature when pumping
-#define INIT_PUMP_CYCLES        120
+#define TEST_PUMP_CYCLES        120
+
+// number of cycles with light intensity zero before
+// declaring night
+#define NIGHT_CYCLES            3600
 
 // minimum temperature difference between supply flow temperature
 // and tank temperature in centidegrees Celsius to keep the pump
@@ -63,17 +88,28 @@
 
 //{{{ subsystem and error constants and variables
 
+// subsystem identifiers
 #define SUBSYS_SENSORS          0x0001
 #define SUBSYS_LCD              0x0002
 #define SUBSYS_RTC              0x0004
 #define SUBSYS_SD               0x0008
 
-// critical subsystems, the failure of which results in the error
-// state
+// critical subsystems, the failure of which results in
+// transition to the error state.  Must include at least
+// SUBSYS_SENSORS.
 #define SUBSYS_CRITICAL         SUBSYS_SENSORS
 
 #define SUBSYS_MASK             0x000f
 
+// bit vector of failed subsystems
+uint8_t fldss = 0;
+
+inline bool okp( uint8_t subsys )
+{
+  return (! (fldss & subsys));
+}
+
+// SD card error location
 #define SDLOC_WRITE             0x0010
 #define SDLOC_CLOSE             0x0020
 #define SDLOC_OPEN              0x0030
@@ -87,20 +123,17 @@
 
 #define SDLOC_MASK              0x0ff0
 
-#define okp( subsys )  (! (fldss & subsys))
-
-uint8_t fldss = 0;
-
+// message IDs
 #define MSGID_ERROR             0x0e
 #define MSGID_SD_ERROR          0x0f
 
 #define MSGID_MASK              0x0f
 
-#define MESSAGE_MASK            0x0fff
+#define MSGVL_MASK              0x0fff
 
 // message ring size.  Should be larger than one for the message
 // ring to be useful.
-#define MESSAGE_RING_SIZE       4
+#define MESSAGE_RING_SIZE       64
 
 // message ring
 uint16_t mring[MESSAGE_RING_SIZE] = { 0 };
@@ -118,39 +151,56 @@ byte mrmxp = 1;
 // ring maximum pointer.
 byte mrrdp = 0;
 
-// report an error of the specified subsystem
-#define error( subsys )                                                 \
-  error0( MSGID_ERROR, subsys );
-
-// report an error of the SD card subsystem
-#define sderr( sdloc ) {                                                \
-  error0( MSGID_ERROR,    SUBSYS_SD | sdloc );                          \
-  error0( MSGID_SD_ERROR, lfidx << 8 | sd.card()->errorCode() );        \
-}
-
+// writes the specified message to the message ring
 void error0( uint8_t msgid, uint16_t msgvl )
 {
-  debugnm( (uint16_t)((msgid & MSGID_MASK) << 12) | (msgvl & MESSAGE_MASK), HEX );
+  // calculate message from ID and value
+  uint16_t msg = ((msgid & MSGID_MASK) << 12) | (msgvl & MSGVL_MASK);
+  debugnm( msg, HEX );
 
   // fail the corresponding subsystem if this is a regular error
   if ( (msgid == MSGID_ERROR) )
     fldss |= (msgvl & SUBSYS_MASK);
 
-  // store message ID and value in message ring
-  mring[mrwrp++] = ((msgid & MSGID_MASK) << 12) | (msgvl & MESSAGE_MASK);
+  // store message in message ring
+  mring[mrwrp++] = msg;
 
-  // wrap over pointer, if needed
+  // wrap over pointer if needed
   if ( mrwrp == MESSAGE_RING_SIZE ) mrwrp = 0;
 
   // zero the following element in the message ring as wrap-over
   // marker
   mring[mrwrp] = 0;
 
-  if ( mrmxp < MESSAGE_RING_SIZE )
-    mrmxp++;
+  if ( mrmxp < MESSAGE_RING_SIZE ) mrmxp++;
 }
 
-uint32_t crmsg()
+// reports an error of the specified subsystem in the message ring
+inline void error( uint8_t subsys )
+{
+  error0( MSGID_ERROR, subsys );
+}
+
+extern byte  lfidx;
+extern SdFat sd;
+
+// reports an error of the SD card subsystem in the message ring
+inline void sderr( uint16_t sdloc )
+{
+  error0( MSGID_ERROR,    SUBSYS_SD | sdloc );
+  error0( MSGID_SD_ERROR, lfidx << 8 | sd.card()->errorCode() );
+}
+
+// returns the number of messages in the message ring
+inline byte msgcnt()
+{
+  return (mrmxp - 1);
+}
+
+// returns the next message in the message ring.  This function
+// returns zero if there are no messages at all or if it cycles
+// over the wrap-over marker.
+inline uint32_t nextmsg()
 {
   uint32_t msg = mring[mrrdp++];
   if ( mrrdp == mrmxp ) mrrdp = 0;
@@ -163,15 +213,15 @@ uint32_t crmsg()
 
 volatile bool cbtnp = false;
 
-unsigned long lits = 0;                         // last-interrupt-timestamp
+unsigned long lints = 0;                        // last-interrupt-timestamp
 
 void ocbtnp()                                   // on-control-button-pressed
 {
   // ignore interrupts coming too fast to be real button presses
-  unsigned long its = millis();
-  if ( its - lits > DEBOUNCE_DELAY ) {
+  unsigned long ints = millis();
+  if ( ints - lints > DEBOUNCE_DELAY ) {
     cbtnp = true;
-    lits  = its;
+    lints = ints;
   }
 }
 
@@ -186,9 +236,11 @@ void ocbtnp()                                   // on-control-button-pressed
 #define STATE_PUMPING           '@'
 #define STATE_WAITING           '*'
 
-char state;
-int  ltlvl;
-int  pumpc;
+char           state;
+unsigned short strtc;
+unsigned short ltlvl;
+unsigned short darkc;
+unsigned short pumpc;
 
 // sets the current processing state to the specified new state.
 // Initializes variables related to the new state.  The new state
@@ -198,12 +250,16 @@ void setstate( char newstate )
   state = newstate;
 
   switch ( state ) {
+  case STATE_STARTING:
+    strtc = 0;
+    break;
+
   case STATE_PUMPING:
-    pumpc = INIT_PUMP_CYCLES;
+    pumpc = 0;
     break;
 
   case STATE_WAITING:
-    ltlvl = INIT_LIGHT_LEVEL;
+    ltlvl = 0;
     break;
   }
 }
@@ -213,23 +269,28 @@ void setstate( char newstate )
 //{{{ sensor items
 
 // supply flow, return flow, tank sensors
-const DeviceAddress SENSOR_SUPPLY = { 0x28, 0xaa, 0xac, 0xdb, 0x3c, 0x14, 0x01, 0xe6 };
-const DeviceAddress SENSOR_RETURN = { 0x28, 0xaa, 0xe9, 0x12, 0x3d, 0x14, 0x01, 0xdc };
-const DeviceAddress SENSOR_TANK   = { 0x28, 0xaa, 0x33, 0x11, 0x3d, 0x14, 0x01, 0xb7 };
+const DeviceAddress SENSOR_SUPPLY PROGMEM = { 0x28, 0xaa, 0xac, 0xdb, 0x3c, 0x14, 0x01, 0xe6 };
+const DeviceAddress SENSOR_RETURN PROGMEM = { 0x28, 0xaa, 0xe9, 0x12, 0x3d, 0x14, 0x01, 0xdc };
+const DeviceAddress SENSOR_TANK   PROGMEM = { 0x28, 0xaa, 0x33, 0x11, 0x3d, 0x14, 0x01, 0xb7 };
 
 OneWire onewire( INOUT_ONE_WIRE );
 
 DallasTemperature sensors( &onewire );
 
-// returns temperature reading of the specified sensor
-int getTemp( const DeviceAddress sensor )
+// returns temperature reading of the specified sensor in
+// centidegrees Celsius
+int getTemp( const DeviceAddress sensor, bool tolerant )
 {
   int raw = sensors.getTemp( sensor );
   if ( raw > DEVICE_DISCONNECTED_RAW ) {
     return (float)raw * 0.78125;
   }
+  else if ( tolerant ) {
+    return 0;
+  }
   else {
-    // report an error only if that has not be done before
+    // report an error only if that has not be done before to
+    // avoid flooding the message ring
     if ( okp( SUBSYS_SENSORS ) )
       error( SUBSYS_SENSORS );
     return -1000;
@@ -238,7 +299,7 @@ int getTemp( const DeviceAddress sensor )
 
 //}}}
 
-//{{{ LCD items
+//{{{ LCD and RTC items
 
 #define LCD_I2C_ADDRESS         0x27
 
@@ -249,10 +310,6 @@ int getTemp( const DeviceAddress sensor )
 #define LCD_CHAR_DEGREE         "\xdf"
 
 LiquidCrystal_I2C lcd( LCD_I2C_ADDRESS, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE );
-
-//}}}
-
-//{{{ RTC items
 
 RTC_DS1307 rtc;
 
@@ -272,7 +329,7 @@ RTC_DS1307 rtc;
 //     test $i == 0 && sleep 2
 //     touch /media/usd00/solarlog/log$i.csv
 //   done
-const char LOG_DIR_NAME[] = "/solarlog";
+const char LOG_DIR_NAME[] PROGMEM = "/solarlog";
 
 // log file name, which is calculated from the log file template
 // and the specified log file index
@@ -281,9 +338,10 @@ char LOG_FILE_TEMPLATE[] = "log0.csv";
 
 SdFat    sd;
 SdFile   lfile;
-byte     lfidx;
-uint32_t lfssz;
+byte     lfidx;                                 // log-file-index
+uint32_t lfssz;                                 // log-file-synched-size
 
+// date-time-callback for the SD card library
 void rtc2sd( uint16_t* date, uint16_t* time )
 {
   DateTime now = rtc.now();
@@ -303,28 +361,30 @@ void updtlog( int temps, int tempr, int tempt, int light )
     return;
 
   lfile.print( rtc.now().unixtime() );
-  lfile.print( "," );
+  lfile.print( ',' );
   lfile.print( state );
-  lfile.print( "," );
+  lfile.print( ',' );
   lfile.print( temps );
-  lfile.print( "," );
+  lfile.print( ',' );
   lfile.print( tempr );
-  lfile.print( "," );
+  lfile.print( ',' );
   lfile.print( tempt );
-  lfile.print( "," );
+  lfile.print( ',' );
   lfile.print( light );
-  lfile.print( "," );
+  lfile.print( ',' );
   lfile.print( (state == STATE_PUMPING) ? pumpc : 0 );
-  lfile.print( "," );
+  lfile.print( ',' );
   lfile.print( (state == STATE_WAITING) ? ltlvl : 0 );
-  lfile.print( "," );
+  lfile.print( ',' );
   lfile.print( fldss );
+  lfile.print( ',' );
+  lfile.print( msgcnt() );
   lfile.println();
 
   if ( lfile.getWriteError() ) {
     lfile.clearWriteError();
     sderr( SDLOC_WRITE );
-    debugln( "Cannot write to log file." );
+    debugln( F("Cannot write to log file.") );
   }
 
   uint32_t lfsz = lfile.fileSize();
@@ -332,16 +392,14 @@ void updtlog( int temps, int tempr, int tempt, int light )
     // switch to next log file
     if ( (! lfile.close() ) ) {
       sderr( SDLOC_CLOSE );
-      debugln( "Cannot close log file after writing." );
+      debugln( F("Cannot close log file after writing.") );
     }
-    if ( lfidx == 9 )
-      lfidx = 0;
-    else
-      lfidx++;
+    if ( lfidx < 9 ) lfidx++;
+    else             lfidx = 0;
     if ( (okp( SUBSYS_SD )) &&
          (! lfile.open( lfn( lfidx ), O_WRITE | O_TRUNC | O_APPEND ) ) ) {
       sderr( SDLOC_OPEN );
-      debugln( "Cannot open next log file for writing." );
+      debugln( F("Cannot open next log file for writing.") );
     }
     lfssz = 0;
   }
@@ -350,7 +408,7 @@ void updtlog( int temps, int tempr, int tempt, int light )
     if ( (okp( SUBSYS_SD )) &&
          (! lfile.sync() ) ) {
       sderr( SDLOC_SYNC );
-      debugln( "Cannot sync log file." );
+      debugln( F("Cannot sync log file.") );
     }
     lfssz = lfsz;
   }
@@ -365,6 +423,8 @@ void updtlog( int temps, int tempr, int tempt, int light )
 
 //{{{ updtlcd
 
+// write the specifed inidcator character and value in decimal
+// format to the specified postion in the specified display row
 void lcddec( char row[], byte pos, char ind, int val )
 {
   row[pos++] = ind;
@@ -394,6 +454,9 @@ void lcddec( char row[], byte pos, char ind, int val )
   }
 }
 
+// write the specifed inidcator character and value in
+// hexadecimal format to the specified postion in the specified
+// display row
 void lcdhex( char row[], byte pos, char ind, uint16_t val )
 {
   uint8_t digit;
@@ -404,13 +467,18 @@ void lcdhex( char row[], byte pos, char ind, uint16_t val )
   digit = val >>  0;                row[pos++] = (digit < 10) ? '0' + digit : 'a' + digit - 10;
 }
 
-// (incomplete)
+// write the specified sensor data and the current state to the
+// LCD.  Switch on LCD backlight in case the message ring is
+// non-empty.
 void updtlcd( int temps, int tempr, int tempt, int light )
 {
   if ( (! okp( SUBSYS_LCD )) )
     return;
 
-  char row[17];
+  if ( msgcnt() > 1 )
+    lcd.backlight();
+
+  char row[16 + 1];
   row[16] = '\0';
 
   // format: "sNNNNrNNNNcNNNNs"
@@ -420,15 +488,20 @@ void updtlcd( int temps, int tempr, int tempt, int light )
   lcddec( row, 10, 'c', pumpc );
   else if ( (state == STATE_WAITING) )
   lcddec( row, 10, 'c', ltlvl );
-  else
-  lcddec( row, 10, 'c', 0 );
-          row[ 15] = state;
+  else {
+          row[ 10] = ' ';
+          row[ 11] = ' ';
+          row[ 12] = ' ';
+          row[ 13] = ' ';
+          row[ 14] = ' ';
+  }
+          row[ 15] = ' ';
   lcd.setCursor( 0, 0 );
   lcd.print( row );
 
-  uint16_t msg = crmsg();
+  uint16_t msg = nextmsg();
 
-  // format: "tNNNNlNNNNeNNNN "
+  // format: "tNNNNlNNNNmNNNN "
   lcddec( row,  0, 't', tempt );
   lcddec( row,  5, 'l', light );
   if ( (msg == 0) ) {
@@ -437,13 +510,11 @@ void updtlcd( int temps, int tempr, int tempt, int light )
           row[ 12] = ' ';
           row[ 13] = ' ';
           row[ 14] = ' ';
-  lcd.noBacklight();
   }
   else {
-  lcdhex( row, 10, 'e', msg );
-  lcd.backlight();
+  lcdhex( row, 10, 'm', msg );
   }
-          row[ 15] = ' ';
+          row[ 15] = state;
   lcd.setCursor( 0, 1 );
   lcd.print( row );
 }
@@ -462,7 +533,7 @@ void setup()
 #endif
 
   // initialize state
-  state = STATE_STARTING;
+  setstate( STATE_STARTING );
 
   // initialize temperature sensors
   sensors.begin();
@@ -473,19 +544,19 @@ void setup()
   }
   else {
     error( SUBSYS_SENSORS );
-    debugln( "Cannot initialize sensor." );
+    debugln( F("Cannot initialize sensor.") );
   }
 
   // initialize LCD
   Wire.begin();
   Wire.beginTransmission( LCD_I2C_ADDRESS );
-  if ( Wire.endTransmission() == 0 ) {
+  if ( (Wire.endTransmission() == 0) ) {
     lcd.begin( 16, 2 );
     lcd.noBacklight();
   }
   else {
     error( SUBSYS_LCD );
-    debugln( "Cannot initialize LCD." );
+    debugln( F("Cannot initialize LCD.") );
   }
 
   // initialize RTC
@@ -494,20 +565,19 @@ void setup()
   }
   else {
     error( SUBSYS_RTC );
-    debugln( "Cannot initialize RTC." );
+    debugln( F("Cannot initialize RTC.") );
   }
 
   // initialize SD card and change to log directory
   SdFile::dateTimeCallback( rtc2sd );
-  if ( (okp( SUBSYS_SD )) &&
-       (! sd.begin( SS, SPI_HALF_SPEED )) ) {
+  if ( (! sd.begin( SS, SPI_HALF_SPEED )) ) {
     sderr( SDLOC_INIT_BEGIN );
-    debugln( "Cannot initialize SD." );
+    debugln( F("Cannot initialize SD.") );
   }
   if ( (okp( SUBSYS_SD )) &&
        (! sd.chdir( LOG_DIR_NAME )) ) {
     sderr( SDLOC_INIT_CHDIR );
-    debugln( "Cannot change to log directory." );
+    debugln( F("Cannot change to log directory.") );
   }
 
   // ensure all log files exist and determine most recent one
@@ -518,18 +588,18 @@ void setup()
     if ( (okp( SUBSYS_SD )) &&
          (! lfile.open( lfn( i ), O_READ )) ) {
       sderr( SDLOC_INIT_OPEN_READ );
-      debugln( "Cannot open log file for reading." );
+      debugln( F("Cannot open log file for reading.") );
     }
     uint16_t pdate = 0;
     uint16_t ptime = 0;
     if ( (okp( SUBSYS_SD )) &&
          (! lfile.getModifyDateTime( &pdate, &ptime )) ) {
       sderr( SDLOC_INIT_STAT );
-      debugln( "Cannot determine modification timestamp." );
+      debugln( F("Cannot determine modification timestamp.") );
     }
     if ( (! lfile.close() ) ) {
       sderr( SDLOC_INIT_CLOSE );
-      debugln( "Cannot close log file after reading." );
+      debugln( F("Cannot close log file after reading.") );
     }
     if ( (pdate > mrpdate) ||
          ((pdate == mrpdate) && (ptime > mrptime)) ) {
@@ -544,13 +614,14 @@ void setup()
   if ( (okp( SUBSYS_SD )) &&
        (! lfile.open( lfn( lfidx ), O_WRITE | O_APPEND )) ) {
     error( SDLOC_INIT_OPEN_WRITE );
-    debugln( "Cannot open initial log file for writing." );
+    debugln( F("Cannot open initial log file for writing.") );
   }
   if ( (okp( SUBSYS_SD )) ) {
     lfssz = lfile.fileSize();
   }
 
-  // activate internal pull-up on control button
+  // activate internal pull-up on control button but attach the
+  // interrupt only after startup has completed
   pinMode( INPUT_CONTROL_BUTTON, INPUT_PULLUP );
 
   // initialize relais MOS-FETs
@@ -562,7 +633,7 @@ void setup()
   digitalWrite( OUTPUT_AUX_RELAIS, LOW );
 
   // enable watchdog
-  wdt_enable( WDTO_8S );
+  wdt_enable( WATCHDOG_TIMEOUT );
 }
 
 //}}}
@@ -572,27 +643,44 @@ void setup()
 void loop()
 {
   sensors.requestTemperatures();
-  int temps = getTemp( SENSOR_SUPPLY );
-  int tempr = getTemp( SENSOR_RETURN );
-  int tempt = getTemp( SENSOR_TANK );
+  int temps = getTemp( SENSOR_SUPPLY, (state == STATE_STARTING) );
+  int tempr = getTemp( SENSOR_RETURN, (state == STATE_STARTING) );
+  int tempt = getTemp( SENSOR_TANK,   (state == STATE_STARTING) );
 
+  // read and normalize current light intensity
   int light = analogRead( INPUT_LIGHT_SENSOR );
+  if ( light < 0 ) light = 0;
+
+  // update darkness counter
+  if ( 0 )
+    ; // alignment no-op
+  else if ( (light == 0) && (darkc < USHRT_MAX) )
+    darkc++;
+  else if ( (light == 0) )
+    ; // no-op
+  else
+    darkc = 0;
 
   // determine new state
   switch ( state ) {
+
   case STATE_STARTING:
     if ( (! okp( SUBSYS_CRITICAL )) ) {
       setstate( STATE_ERROR );
     }
     else if ( cbtnp ) {
-      // should not happen
+      // should not happen since we attach the interrupt only
+      // when leaving this state
       cbtnp = false;
     }
-    else if ( (temps != tempr) || (tempr != tempt) ) {
+    else if ( strtc < START_CYCLES ) {
+      strtc++;
+    }
+    else {
       attachInterrupt( digitalPinToInterrupt( INPUT_CONTROL_BUTTON ),
                        ocbtnp, FALLING );
       updtlog( 0, 0, 0, 0 );
-      setstate( STATE_PUMPING );
+      setstate( STATE_WAITING );
     }
     break;
 
@@ -627,17 +715,18 @@ void loop()
       cbtnp = false;
       setstate( STATE_FORCE_OFF );
     }
-    else if ( ltlvl > 0 ) {
+    else if ( ltlvl < PUMP_LIGHT_LEVEL ) {
       if ( false )
         ; // alignment no-op
-      else if ( (okp( SUBSYS_SENSORS )) &&
-                (tempt >= 100) )
-        ltlvl -= light / (tempt / 100);
-      else if ( (okp( SUBSYS_SENSORS )) )
-        ltlvl -= light;
+      else if ( (darkc >= NIGHT_CYCLES) &&
+                (ltlvl >  0) )
+        ltlvl--;
+      else if ( (darkc >= NIGHT_CYCLES) )
+        ; // no-op
+      else if ( (tempt >= 100) )
+        ltlvl += light / (tempt / 100);
       else
-        ltlvl -= light / 64;
-      if ( ltlvl < 0 ) ltlvl = 0;
+        ltlvl += light;
     }
     else {
       setstate( STATE_PUMPING );
@@ -652,13 +741,14 @@ void loop()
       cbtnp = false;
       setstate( STATE_FORCE_ON );
     }
-    else if ( pumpc > 0 ) {
-      pumpc--;
+    else if ( pumpc < TEST_PUMP_CYCLES ) {
+      pumpc++;
     }
     else if ( temps - tempt < TEMP_DELTA ) {
       setstate( STATE_WAITING );
     }
     break;
+
   }
 
   // update display right away after start-up
