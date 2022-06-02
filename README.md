@@ -39,9 +39,10 @@ installiert.
   2 Module Hitachi Solar Collector Type SK-21D in
   Ost-West-Ausrichtung auf der Südseite des Daches
 
-  Keine Referenzen gefunden, sollen Vakuumröhrenkollektoren sein.
-  Die bisher mit den neuen Temperatursensoren maximal gemessene
-  Temperatur am Vorlauf betrug knapp 80°C.
+  Keine Referenzen gefunden.  Es waren mal
+  Vakuumröhrenkollektoren, jetzt sind es nur noch, nun ja,
+  Röhrenkollektoren.  Die bisher mit den neuen Temperatursensoren
+  maximal gemessene Temperatur am Vorlauf betrug ca. 90°C.
 
 - **Wärmemedium**
 
@@ -77,6 +78,11 @@ installiert.
   Grundfos Typ 25-40 180 auf Drehzahlstufe 1
 
   https://product-selection.grundfos.com/de/products/up-ups-series-100/up-ups/ups-25-40-180-96281375?tab=variant-curves&pumpsystemid=1563828155
+
+  Da das Modell in der bestehenden Anlage schon etwas älter ist,
+  hier sein Typenschild:
+
+  ![Typenschild der Pumpe](https://github.com/farblos/solarcontrol/blob/main/assets/dsc_0012.jpg?raw=true)
 
 - **Speicher**
 
