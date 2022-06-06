@@ -15,6 +15,7 @@
 //
 
 #include <DallasTemperature.h>
+#include <EEPROM.h>
 #include <LCD.h>
 #include <LiquidCrystal_I2C.h>
 #include <OneWire.h>
@@ -47,6 +48,10 @@
 
 // number of cycles to wait before starting regular operation
 #define START_CYCLES            10
+
+// number of cycles to wait until failing the sensor subsystem
+// because of persistent invalid temperature readings
+#define FAILED_SENSOR_CYCLES    10
 
 // minimum number of light levels to accumulate before starting
 // pump
@@ -88,18 +93,21 @@
 
 //{{{ subsystem and error constants and variables
 
-// subsystem identifiers
-#define SUBSYS_SENSORS          0x0001
-#define SUBSYS_LCD              0x0002
-#define SUBSYS_RTC              0x0004
-#define SUBSYS_SD               0x0008
+// subsystem identifiers.  Must be smaller than or equal to
+// SUBSYS_MASK.
+#define SUBSYS_CORE             0x0001
+#define SUBSYS_EEPROM           0x0002
+#define SUBSYS_SENSORS          0x0004
+#define SUBSYS_LCD              0x0008
+#define SUBSYS_RTC              0x0010
+#define SUBSYS_SD               0x0020
 
 // critical subsystems, the failure of which results in
 // transition to the error state.  Must include at least
 // SUBSYS_SENSORS.
 #define SUBSYS_CRITICAL         SUBSYS_SENSORS
 
-#define SUBSYS_MASK             0x000f
+#define SUBSYS_MASK             0x00ff
 
 // bit vector of failed subsystems
 uint8_t fldss = 0;
@@ -109,19 +117,20 @@ inline bool okp( uint8_t subsys )
   return (! (fldss & subsys));
 }
 
-// SD card error location
-#define SDLOC_WRITE             0x0010
-#define SDLOC_CLOSE             0x0020
-#define SDLOC_OPEN              0x0030
-#define SDLOC_SYNC              0x0040
-#define SDLOC_INIT_BEGIN        0x0050
-#define SDLOC_INIT_CHDIR        0x0060
-#define SDLOC_INIT_OPEN_READ    0x0070
-#define SDLOC_INIT_STAT         0x0080
-#define SDLOC_INIT_CLOSE        0x0090
-#define SDLOC_INIT_OPEN_WRITE   0x00a0
+// SD card error location.  Must be smaller than or equal to
+// SDLOC_MASK.
+#define SDLOC_WRITE             0x0001
+#define SDLOC_CLOSE             0x0002
+#define SDLOC_OPEN              0x0003
+#define SDLOC_SYNC              0x0004
+#define SDLOC_INIT_BEGIN        0x0005
+#define SDLOC_INIT_CHDIR        0x0006
+#define SDLOC_INIT_OPEN_READ    0x0007
+#define SDLOC_INIT_STAT         0x0008
+#define SDLOC_INIT_CLOSE        0x0009
+#define SDLOC_INIT_OPEN_WRITE   0x000a
 
-#define SDLOC_MASK              0x0ff0
+#define SDLOC_MASK              0x000f
 
 // message IDs
 #define MSGID_ERROR             0x0e
@@ -187,8 +196,8 @@ extern SdFat sd;
 // reports an error of the SD card subsystem in the message ring
 inline void sderr( uint16_t sdloc )
 {
-  error0( MSGID_ERROR,    SUBSYS_SD | sdloc );
-  error0( MSGID_SD_ERROR, lfidx << 8 | sd.card()->errorCode() );
+  error0( MSGID_ERROR,    ((sdloc & SDLOC_MASK) << 8) | SUBSYS_SD );
+  error0( MSGID_SD_ERROR, ((lfidx & 0x000f)     << 8) | (sd.card()->errorCode() & 0x00ff) );
 }
 
 // returns the number of messages in the message ring
@@ -266,33 +275,59 @@ void setstate( char newstate )
 
 //}}}
 
+//{{{ EEPROM items
+
+#define EEPROM_MAGIC_ADDRESS    0x00
+
+#define EEPROM_MAGIC_VALUE      0x1a
+
+//}}}
+
 //{{{ sensor items
 
-// supply flow, return flow, tank sensors
-const DeviceAddress SENSOR_SUPPLY = { 0x28, 0xaa, 0xac, 0xdb, 0x3c, 0x14, 0x01, 0xe6 };
-const DeviceAddress SENSOR_RETURN = { 0x28, 0xaa, 0xe9, 0x12, 0x3d, 0x14, 0x01, 0xdc };
-const DeviceAddress SENSOR_TANK   = { 0x28, 0xaa, 0x33, 0x11, 0x3d, 0x14, 0x01, 0xb7 };
+#define SENSOR_SUPPLY           0
+#define SENSOR_RETURN           1
+#define SENSOR_TANK             2
+
+// supply flow, return flow, tank sensors.  Keep the size of
+// array invrd in sync with the size of this array.
+const DeviceAddress SENSORS[] = {
+  { 0x28, 0xaa, 0xac, 0xdb, 0x3c, 0x14, 0x01, 0xe6 },
+  { 0x28, 0xaa, 0xe9, 0x12, 0x3d, 0x14, 0x01, 0xdc },
+  { 0x28, 0xaa, 0x33, 0x11, 0x3d, 0x14, 0x01, 0xb7 }
+};
 
 OneWire onewire( INOUT_ONE_WIRE );
 
 DallasTemperature sensors( &onewire );
 
+byte invrd[] = {
+  0,
+  0,
+  0
+};
+
 // returns temperature reading of the specified sensor in
 // centidegrees Celsius
-int getTemp( const DeviceAddress sensor, bool tolerant )
+int getTemp( byte snsid )
 {
-  int raw = sensors.getTemp( sensor );
+  int raw = sensors.getTemp( SENSORS[snsid] );
   if ( raw > DEVICE_DISCONNECTED_RAW ) {
+    invrd[snsid] = 0;
     return (float)raw * 0.78125;
   }
-  else if ( tolerant ) {
-    return 0;
+  else if ( invrd[snsid] < FAILED_SENSOR_CYCLES ) {
+    // ignore intermittent invalid temperature readings
+    invrd[snsid]++;
+    return -1000;
   }
-  else {
+  else if ( okp( SUBSYS_SENSORS ) ) {
     // report an error only if that has not be done before to
     // avoid flooding the message ring
-    if ( okp( SUBSYS_SENSORS ) )
-      error( SUBSYS_SENSORS );
+    error( SUBSYS_SENSORS );
+    return -1000;
+  }
+  else {
     return -1000;
   }
 }
@@ -312,6 +347,11 @@ int getTemp( const DeviceAddress sensor, bool tolerant )
 LiquidCrystal_I2C lcd( LCD_I2C_ADDRESS, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE );
 
 RTC_DS1307 rtc;
+
+// setup date and time information
+unsigned short stpyr;
+unsigned short stpmd;
+unsigned short stphm;
 
 //}}}
 
@@ -481,7 +521,47 @@ void updtlcd( int temps, int tempr, int tempt, int light )
   char row[16 + 1];
   row[16] = '\0';
 
-  // format: "sNNNNrNNNNcNNNNs"
+  if ( state == STATE_STARTING ) {
+
+  // format: "yNNNNdNNNNtNNNN "
+  lcddec( row,  0, 'y', stpyr );
+  lcddec( row,  5, 'd', stpmd );
+  lcddec( row, 10, 't', stphm );
+          row[ 15] = ' ';
+  lcd.setCursor( 0, 0 );
+  lcd.print( row );
+
+  uint16_t msg = nextmsg();
+
+  // format: "          mNNNNs"
+          row[  0] = ' ';
+          row[  1] = ' ';
+          row[  2] = ' ';
+          row[  3] = ' ';
+          row[  4] = ' ';
+          row[  5] = ' ';
+          row[  6] = ' ';
+          row[  7] = ' ';
+          row[  8] = ' ';
+          row[  9] = ' ';
+  if ( (msg == 0) ) {
+          row[ 10] = ' ';
+          row[ 11] = ' ';
+          row[ 12] = ' ';
+          row[ 13] = ' ';
+          row[ 14] = ' ';
+  }
+  else {
+  lcdhex( row, 10, 'm', msg );
+  }
+          row[ 15] = state;
+  lcd.setCursor( 0, 1 );
+  lcd.print( row );
+
+  }
+  else {
+
+  // format: "sNNNNrNNNNcNNNN "
   lcddec( row,  0, 's', temps );
   lcddec( row,  5, 'r', tempr );
   if ( (state == STATE_PUMPING) )
@@ -501,7 +581,7 @@ void updtlcd( int temps, int tempr, int tempt, int light )
 
   uint16_t msg = nextmsg();
 
-  // format: "tNNNNlNNNNmNNNN "
+  // format: "tNNNNlNNNNmNNNNs"
   lcddec( row,  0, 't', tempt );
   lcddec( row,  5, 'l', light );
   if ( (msg == 0) ) {
@@ -517,6 +597,8 @@ void updtlcd( int temps, int tempr, int tempt, int light )
           row[ 15] = state;
   lcd.setCursor( 0, 1 );
   lcd.print( row );
+
+  }
 }
 
 //}}}
@@ -535,11 +617,24 @@ void setup()
   // initialize state
   setstate( STATE_STARTING );
 
+  // detect restarts after upload and initialize EEPROM otherwise
+  if ( (EEPROM.read( EEPROM_MAGIC_ADDRESS ) == EEPROM_MAGIC_VALUE) ) {
+    error( SUBSYS_CORE );
+    debugln( F("Cannot keep system running.") );
+  }
+  else {
+    EEPROM.write( EEPROM_MAGIC_ADDRESS, EEPROM_MAGIC_VALUE );
+    if ( (EEPROM.read( EEPROM_MAGIC_ADDRESS ) != EEPROM_MAGIC_VALUE) ) {
+      error( SUBSYS_EEPROM );
+      debugln( F("Cannot write EEPROM magic value.") );
+    }
+  }
+
   // initialize temperature sensors
   sensors.begin();
-  if ( (sensors.isConnected( SENSOR_SUPPLY )) &&
-       (sensors.isConnected( SENSOR_RETURN )) &&
-       (sensors.isConnected( SENSOR_TANK   )) ) {
+  if ( (sensors.isConnected( SENSORS[SENSOR_SUPPLY] )) &&
+       (sensors.isConnected( SENSORS[SENSOR_RETURN] )) &&
+       (sensors.isConnected( SENSORS[SENSOR_TANK]   )) ) {
     sensors.setResolution( 12 );
   }
   else {
@@ -552,6 +647,7 @@ void setup()
   Wire.beginTransmission( LCD_I2C_ADDRESS );
   if ( (Wire.endTransmission() == 0) ) {
     lcd.begin( 16, 2 );
+    lcd.clear();
     lcd.noBacklight();
   }
   else {
@@ -559,9 +655,15 @@ void setup()
     debugln( F("Cannot initialize LCD.") );
   }
 
-  // initialize RTC
+  // initialize RTC but adjust it only after an upload
   if ( (rtc.begin()) ) {
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    if ( okp( SUBSYS_CORE ) ) {
+      rtc.adjust( DateTime( F(__DATE__), F(__TIME__) ) );
+    }
+    DateTime now = rtc.now();
+    stpyr = now.year();
+    stpmd = now.month() * 100 + now.day();
+    stphm = now.hour()  * 100 + now.minute();
   }
   else {
     error( SUBSYS_RTC );
@@ -613,7 +715,7 @@ void setup()
   lfidx = mrlfidx;
   if ( (okp( SUBSYS_SD )) &&
        (! lfile.open( lfn( lfidx ), O_WRITE | O_APPEND )) ) {
-    error( SDLOC_INIT_OPEN_WRITE );
+    sderr( SDLOC_INIT_OPEN_WRITE );
     debugln( F("Cannot open initial log file for writing.") );
   }
   if ( (okp( SUBSYS_SD )) ) {
@@ -643,9 +745,9 @@ void setup()
 void loop()
 {
   sensors.requestTemperatures();
-  int temps = getTemp( SENSOR_SUPPLY, (state == STATE_STARTING) );
-  int tempr = getTemp( SENSOR_RETURN, (state == STATE_STARTING) );
-  int tempt = getTemp( SENSOR_TANK,   (state == STATE_STARTING) );
+  int temps = getTemp( SENSOR_SUPPLY );
+  int tempr = getTemp( SENSOR_RETURN );
+  int tempt = getTemp( SENSOR_TANK );
 
   // read and normalize current light intensity
   int light = analogRead( INPUT_LIGHT_SENSOR );

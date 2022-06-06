@@ -22,6 +22,7 @@ USER_LIB_PATH :=	$(realpath ../../libraries)
 ARDUINO_LIBS :=					\
 			Adafruit_BusIO		\
 			DallasTemperature	\
+			EEPROM			\
 			NewliquidCrystal	\
 			OneWire			\
 			RTClib			\
