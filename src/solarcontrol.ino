@@ -50,7 +50,8 @@
 #define START_CYCLES            10
 
 // number of cycles to wait until failing the sensor subsystem
-// because of persistent invalid temperature readings
+// because of persistent invalid temperature readings.  Should be
+// smaller than or equal to the number of start cycles above.
 #define FAILED_SENSOR_CYCLES    10
 
 // minimum number of light levels to accumulate before starting
@@ -68,7 +69,7 @@
 // minimum temperature difference between supply flow temperature
 // and tank temperature in centidegrees Celsius to keep the pump
 // working
-#define TEMP_DELTA              500
+#define TEMP_DELTA              250
 
 //}}}
 
@@ -290,7 +291,7 @@ void setstate( char newstate )
 #define SENSOR_TANK             2
 
 // supply flow, return flow, tank sensors.  Keep the size of
-// array invrd in sync with the size of this array.
+// arrays lstsv and invrd in sync with the size of this array.
 const DeviceAddress SENSORS[] = {
   { 0x28, 0xaa, 0xac, 0xdb, 0x3c, 0x14, 0x01, 0xe6 },
   { 0x28, 0xaa, 0xe9, 0x12, 0x3d, 0x14, 0x01, 0xdc },
@@ -301,6 +302,14 @@ OneWire onewire( INOUT_ONE_WIRE );
 
 DallasTemperature sensors( &onewire );
 
+// last sane value
+float lstsv[] = {
+  0,
+  0,
+  0
+};
+
+// number of consecutive invalid temperature readings
 byte invrd[] = {
   0,
   0,
@@ -314,12 +323,12 @@ int getTemp( byte snsid )
   int raw = sensors.getTemp( SENSORS[snsid] );
   if ( raw > DEVICE_DISCONNECTED_RAW ) {
     invrd[snsid] = 0;
-    return (float)raw * 0.78125;
+    return lstsv[snsid] = ((float)raw * 0.78125);
   }
   else if ( invrd[snsid] < FAILED_SENSOR_CYCLES ) {
     // ignore intermittent invalid temperature readings
     invrd[snsid]++;
-    return -1000;
+    return lstsv[snsid];
   }
   else if ( okp( SUBSYS_SENSORS ) ) {
     // report an error only if that has not be done before to
@@ -357,9 +366,6 @@ unsigned short stphm;
 
 //{{{ SD card items
 
-#define LOG_FILE_MAXSIZE        10485760
-#define LOG_FILE_SYNC_DELTA     1024
-
 // log directory name.  Create log directory structure as
 // follows:
 //
@@ -379,7 +385,6 @@ char LOG_FILE_TEMPLATE[] = "log0.csv";
 SdFat    sd;
 SdFile   lfile;
 byte     lfidx;                                 // log-file-index
-uint32_t lfssz;                                 // log-file-synched-size
 
 // date-time-callback for the SD card library
 void rtc2sd( uint16_t* date, uint16_t* time )
@@ -392,6 +397,11 @@ void rtc2sd( uint16_t* date, uint16_t* time )
 //}}}
 
 //{{{ updtlog
+
+#define LOG_FILE_MAXSIZE        10485760
+#define LOG_FILE_MAX_SYNC_DELTA 1024
+
+uint32_t lfssz;                                 // log-file-synched-size
 
 // write the specified sensor data and the current state to the
 // current log file.  Rotate or sync log files as needed.
@@ -443,7 +453,7 @@ void updtlog( int temps, int tempr, int tempt, int light )
     }
     lfssz = 0;
   }
-  else if ( (lfsz - lfssz) > LOG_FILE_SYNC_DELTA ) {
+  else if ( (lfsz - lfssz) > LOG_FILE_MAX_SYNC_DELTA ) {
     // sync log file if unsynched delta gets too large
     if ( (okp( SUBSYS_SD )) &&
          (! lfile.sync() ) ) {
@@ -463,8 +473,9 @@ void updtlog( int temps, int tempr, int tempt, int light )
 
 //{{{ updtlcd
 
-// write the specifed inidcator character and value in decimal
-// format to the specified postion in the specified display row
+// write the specifed indicator character and value in signed
+// decimal format to the specified postion in the specified
+// display row
 void lcddec( char row[], byte pos, char ind, int val )
 {
   row[pos++] = ind;
@@ -494,7 +505,7 @@ void lcddec( char row[], byte pos, char ind, int val )
   }
 }
 
-// write the specifed inidcator character and value in
+// write the specifed indicator character and unsigned value in
 // hexadecimal format to the specified postion in the specified
 // display row
 void lcdhex( char row[], byte pos, char ind, uint16_t val )
