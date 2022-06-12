@@ -276,14 +276,6 @@ void setstate( char newstate )
 
 //}}}
 
-//{{{ EEPROM items
-
-#define EEPROM_MAGIC_ADDRESS    0x00
-
-#define EEPROM_MAGIC_VALUE      0x1a
-
-//}}}
-
 //{{{ sensor items
 
 #define SENSOR_SUPPLY           0
@@ -526,7 +518,7 @@ void updtlcd( int temps, int tempr, int tempt, int light )
   if ( (! okp( SUBSYS_LCD )) )
     return;
 
-  if ( msgcnt() > 1 )
+  if ( msgcnt() > 0 )
     lcd.backlight();
 
   char row[16 + 1];
@@ -628,14 +620,20 @@ void setup()
   // initialize state
   setstate( STATE_STARTING );
 
-  // detect restarts after upload and initialize EEPROM otherwise
-  if ( (EEPROM.read( EEPROM_MAGIC_ADDRESS ) == EEPROM_MAGIC_VALUE) ) {
+  // detect restarts after upload and initialize EEPROM
+  // otherwise.  Note that the EEPROM is NOT reset to all 0xff
+  // during every upload, only during an ISP erase.
+  unsigned short upldc = 0xffff;
+  EEPROM.get( 0x00, upldc );
+  if ( upldc == UPLOAD_COUNTER ) {
     error( SUBSYS_CORE );
     debugln( F("Cannot keep system running.") );
   }
   else {
-    EEPROM.write( EEPROM_MAGIC_ADDRESS, EEPROM_MAGIC_VALUE );
-    if ( (EEPROM.read( EEPROM_MAGIC_ADDRESS ) != EEPROM_MAGIC_VALUE) ) {
+    upldc = UPLOAD_COUNTER;
+    EEPROM.put( 0x00, upldc );
+    EEPROM.get( 0x00, upldc );
+    if ( upldc != UPLOAD_COUNTER ) {
       error( SUBSYS_EEPROM );
       debugln( F("Cannot write EEPROM magic value.") );
     }

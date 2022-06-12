@@ -30,6 +30,14 @@ ARDUINO_LIBS :=					\
 			SdFat			\
 			Wire
 
+# upload counter magic.  Ensure every upload is done with a
+# unique upload number, which will be written to the EEPROM by
+# the sketch.
+UPLOAD_COUNTER_FILE :=	upload.cnt
+UPLOAD_COUNTER :=	$(shell cat $(UPLOAD_COUNTER_FILE) 2>/dev/null || echo 0)
+
+CPPFLAGS +=		-DUPLOAD_COUNTER=$(UPLOAD_COUNTER)
+
 # enable SD card CRC checking for SPI
 CPPFLAGS +=		-DUSE_SD_CRC=2
 
@@ -40,3 +48,23 @@ CPPFLAGS +=		$(USER_DEFINES)
 export TZ :=		UTC
 
 include $(ARDUINO_DIR)/Arduino.mk
+
+# extend target "upload" by a test whether the internal upload
+# counter variable is set.  This effectively blocks regular "make
+# upload" from Arduino.mk.
+upload:			test_upload_counter
+
+.PHONY:			test_upload_counter
+test_upload_counter:
+			@if test -z "$(UPLOAD_COUNTER_0)"; then			\
+			  echo "Cannot upload without upload counter." 1>&2;	\
+			  echo "Use target \"cupload\" instead." 1>&2;		\
+			  exit 1;						\
+			fi
+
+# make a "counted upload", which is a regular upload with the
+# upload counter being incremented after successfull upload
+.PHONY:			cupload
+cupload:
+			$(MAKE) UPLOAD_COUNTER_0=$(UPLOAD_COUNTER) upload
+			@echo "$$(( $(UPLOAD_COUNTER) + 1 ))" > $(UPLOAD_COUNTER_FILE)
