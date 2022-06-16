@@ -41,8 +41,9 @@ installiert.
 
   Keine Referenzen gefunden.  Es waren mal
   Vakuumröhrenkollektoren, jetzt sind es nur noch, nun ja,
-  Röhrenkollektoren.  Die bisher mit den neuen Temperatursensoren
-  maximal gemessene Temperatur am Vorlauf betrug ca. 90°C.
+  Röhrenkollektoren.
+
+  ![Kollektoren](assets/dsc_0013.jpg?raw=true)
 
 - **Wärmemedium**
 
@@ -59,8 +60,11 @@ installiert.
 
 - **Steuerung der Pumpe**
 
-  Eigenbaulösung des Vorbesitzers mit Fotodiode auf dem Dach und
-  OP-Amp als Komparator, der über ein Relais die Pumpe steuert
+  Eigenbaulösung des Vorbesitzers mit Fotodiode BPW41N auf dem
+  Dach und OP-Amp als Komparator, der über ein Relais die Pumpe
+  steuert
+
+  https://www.vishay.com/docs/81522/bpw41n.pdf
 
 - **Bypassventil**
 
@@ -82,13 +86,13 @@ installiert.
   Da das Modell in der bestehenden Anlage schon etwas älter ist,
   hier sein Typenschild:
 
-  ![Typenschild der Pumpe](https://github.com/farblos/solarcontrol/blob/main/assets/dsc_0012.jpg?raw=true)
+  ![Typenschild der Pumpe](assets/dsc_0012.jpg?raw=true)
 
 - **Speicher**
 
   Brötje SSB 300
 
-  https://polo.broetje.de/pdf/7638646=6=pdf_(bdr_a4_manual)=de-de_ma_ssb_300.pdf
+  https://polo.broetje.de/pdf/7638646=6=pdf_%28bdr_a4_manual%29=de-de_ma_ssb_300.pdf
 
 - **Installation und Isolation der Rohre zum Dach**
 
@@ -105,7 +109,31 @@ installiert.
   Leitungen zu verlegen ist wahrscheinlich eher schwierig.
 
 Hier ist der Kern der Anlage mit Pumpe, **V**orlauf,
-**R**ücklauf, **B**ypasszweig und -ventil zu sehen, oben im Bild
-der erste Prototyp der neuen Steuerung:
+**R**ücklauf, **B**ypasszweig zu sehen, oben im Bild der erste
+Prototyp der neuen Steuerung:
 
-![Kern der Anlage](https://github.com/farblos/solarcontrol/blob/main/assets/dsc_0010.jpg?raw=true)
+![Kern der Anlage](assets/dsc_0010.jpg?raw=true)
+
+Links vom Buchstaben "B" befindet sich das elektrische
+Bypassventil von Honeywell, rechts oberhalb vom "B" ein
+Absperrventil, das im Folgenden "Bypasshandventil" genannt wird.
+
+## Beschreibung des Pumpenalgorithmus
+
+Der größte Teil des [Sketches](src/solarcontrol.ino) besteht aus
+langweiligem Haushalten mit Fehlerbehandlung, SD Card Logging und
+der Anzeige des aktuellen Zustands im LCD.  Der eigentliche
+Pumpenalgorithmus ist in den beiden Zweigen `case STATE_WAITING`
+und `case STATE_PUMPING` der State Machine in der Funktion `loop`
+implementiert.
+
+Vereinfacht gesagt "sammelt" die State Machine im Status
+`STATE_WAITING` Licht vom Lichtsensor geteilt durch die aktuelle
+Speichertemperatur.  Hat sie davon genug gesammelt, wechselt sie
+in den Status `STATE_PUMPING`, pumpt `TEST_PUMP_CYCLES` Zyklen
+(aktuell: ca. 120 Sekunden) und dann noch so lange, wie die
+Differenz zwichen Vorlauftemperatur und Speichertemperatur
+mindestens `TEMP_DELTA` (aktuell: 2.5&deg;C) beträgt.  Fällt die
+Differenz unter `TEMP_DELTA`, so wechselt die State Machine
+wieder in den Status `STATE_WAITING`, wobei sie dabei die
+gesammelte Lichtmenge auf Null zurücksetzt.
