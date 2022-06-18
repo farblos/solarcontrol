@@ -62,6 +62,15 @@ test_untracked_upload:
 			  exit 1;						\
 			fi
 
+# force a recompile before a tracked upload to get correct date,
+# time, and upload counter compiled in
+ifdef TRACKED_UPLOAD
+$(LOCAL_OBJS):		force_tracked_recompile
+
+.PHONY:			force_tracked_recompile
+force_tracked_recompile:
+endif
+
 # make a "tracked upload", which is a regular upload with the
 # uploaded sketch being saved to the upload directory
 .PHONY:			tupload
