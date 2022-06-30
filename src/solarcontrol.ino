@@ -83,9 +83,9 @@
 //
 // The control button must be on a pin that can trigger
 // interrupts.
-#define INPUT_LIGHT_SENSOR      A0
+#define INPUT_LIGHT_SENSOR      A3
 #define INPUT_CONTROL_BUTTON    2
-#define INOUT_ONE_WIRE          6
+#define INOUT_ONE_WIRE          3
 #define OUTPUT_PUMP_RELAIS_N    7
 #define OUTPUT_PUMP_RELAIS_L    8
 #define OUTPUT_AUX_RELAIS       9
@@ -243,6 +243,7 @@ void ocbtnp()                                   // on-control-button-pressed
 #define STATE_ERROR             '!'
 #define STATE_FORCE_ON          '+'
 #define STATE_FORCE_OFF         '-'
+#define STATE_TESTING           '?'
 #define STATE_PUMPING           '@'
 #define STATE_WAITING           '*'
 
@@ -264,7 +265,7 @@ void setstate( char newstate )
     strtc = 0;
     break;
 
-  case STATE_PUMPING:
+  case STATE_TESTING:
     pumpc = 0;
     break;
 
@@ -414,7 +415,7 @@ void updtlog( int temps, int tempr, int tempt, int light )
   lfile.print( ',' );
   lfile.print( light );
   lfile.print( ',' );
-  lfile.print( (state == STATE_PUMPING) ? pumpc : 0 );
+  lfile.print( (state == STATE_TESTING) ? pumpc : 0 );
   lfile.print( ',' );
   lfile.print( (state == STATE_WAITING) ? ltlvl : 0 );
   lfile.print( ',' );
@@ -567,7 +568,7 @@ void updtlcd( int temps, int tempr, int tempt, int light )
   // format: "sNNNNrNNNNcNNNN "
   lcddec( row,  0, 's', temps );
   lcddec( row,  5, 'r', tempr );
-  if ( (state == STATE_PUMPING) )
+  if ( (state == STATE_TESTING) )
   lcddec( row, 10, 'c', pumpc );
   else if ( (state == STATE_WAITING) )
   lcddec( row, 10, 'c', ltlvl );
@@ -737,9 +738,9 @@ void setup()
 
   // initialize relais MOS-FETs
   pinMode( OUTPUT_PUMP_RELAIS_N, OUTPUT );
-  digitalWrite( OUTPUT_PUMP_RELAIS_N, LOW );
+  digitalWrite( OUTPUT_PUMP_RELAIS_N, HIGH );
   pinMode( OUTPUT_PUMP_RELAIS_L, OUTPUT );
-  digitalWrite( OUTPUT_PUMP_RELAIS_L, LOW );
+  digitalWrite( OUTPUT_PUMP_RELAIS_L, HIGH );
   pinMode( OUTPUT_AUX_RELAIS, OUTPUT );
   digitalWrite( OUTPUT_AUX_RELAIS, LOW );
 
@@ -804,7 +805,7 @@ void loop()
     }
     else if ( cbtnp ) {
       cbtnp = false;
-      setstate( STATE_WAITING );
+      setstate( STATE_FORCE_OFF );
     }
     break;
 
@@ -814,7 +815,39 @@ void loop()
     }
     else if ( cbtnp ) {
       cbtnp = false;
+      setstate( STATE_TESTING );
+    }
+    break;
+
+  case STATE_TESTING:
+    if ( (! okp( SUBSYS_CRITICAL )) ) {
+      setstate( STATE_ERROR );
+    }
+    else if ( cbtnp ) {
+      cbtnp = false;
+      setstate( STATE_WAITING );
+    }
+    else if ( pumpc < TEST_PUMP_CYCLES ) {
+      pumpc++;
+    }
+    else if ( temps - tempt < TEMP_DELTA ) {
+      setstate( STATE_WAITING );
+    }
+    else {
       setstate( STATE_PUMPING );
+    }
+    break;
+
+  case STATE_PUMPING:
+    if ( (! okp( SUBSYS_CRITICAL )) ) {
+      setstate( STATE_ERROR );
+    }
+    else if ( cbtnp ) {
+      cbtnp = false;
+      setstate( STATE_WAITING );
+    }
+    else if ( temps - tempt < TEMP_DELTA ) {
+      setstate( STATE_WAITING );
     }
     break;
 
@@ -824,7 +857,7 @@ void loop()
     }
     else if ( cbtnp ) {
       cbtnp = false;
-      setstate( STATE_FORCE_OFF );
+      setstate( STATE_FORCE_ON );
     }
     else if ( ltlvl < PUMP_LIGHT_LEVEL ) {
       if ( false )
@@ -840,23 +873,7 @@ void loop()
         ltlvl += light;
     }
     else {
-      setstate( STATE_PUMPING );
-    }
-    break;
-
-  case STATE_PUMPING:
-    if ( (! okp( SUBSYS_CRITICAL )) ) {
-      setstate( STATE_ERROR );
-    }
-    else if ( cbtnp ) {
-      cbtnp = false;
-      setstate( STATE_FORCE_ON );
-    }
-    else if ( pumpc < TEST_PUMP_CYCLES ) {
-      pumpc++;
-    }
-    else if ( temps - tempt < TEMP_DELTA ) {
-      setstate( STATE_WAITING );
+      setstate( STATE_TESTING );
     }
     break;
 
@@ -870,8 +887,22 @@ void loop()
     updtlog( temps, tempr, tempt, light );
   }
 
+  // operate bypass valve relais depending on state.  Output low
+  // means relais off means valve powered means valve open.
+  if ( (state == STATE_FORCE_ON) ||
+       (state == STATE_PUMPING) ) {
+    digitalWrite( OUTPUT_PUMP_RELAIS_N, LOW );
+    digitalWrite( OUTPUT_PUMP_RELAIS_L, LOW );
+  }
+  else {
+    digitalWrite( OUTPUT_PUMP_RELAIS_N, HIGH );
+    digitalWrite( OUTPUT_PUMP_RELAIS_L, HIGH );
+  }
+
   // operate pump depending on state
-  if ( (state == STATE_FORCE_ON) || (state == STATE_PUMPING) ) {
+  if ( (state == STATE_FORCE_ON) ||
+       (state == STATE_TESTING) ||
+       (state == STATE_PUMPING) ) {
     digitalWrite( OUTPUT_AUX_RELAIS, HIGH );
   }
   else {
