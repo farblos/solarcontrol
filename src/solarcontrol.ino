@@ -54,22 +54,17 @@
 // smaller than or equal to the number of start cycles above.
 #define FAILED_SENSOR_CYCLES    10
 
-// minimum number of light levels to accumulate before starting
-// pump
-#define PUMP_LIGHT_LEVEL        3000
+#define LIGHT_LEVEL_LOW         200
 
-// number of cycles to wait before checking supply flow
-// temperature when pumping
-#define TEST_PUMP_CYCLES        120
+#define LIGHT_LEVEL_HIGH        300
 
-// number of cycles with light intensity zero before
-// declaring night
-#define NIGHT_CYCLES            3600
+#define LOW_LIGHT_CHECK_CYCLES  900
 
-// minimum temperature difference between supply flow temperature
-// and tank temperature in centidegrees Celsius to keep the pump
-// working
-#define TEMP_DELTA              250
+#define HIGH_LIGHT_CHECK_CYCLES 300
+
+#define TEMP_DELTA_LOW          250
+
+#define TEMP_DELTA_HIGH         500
 
 //}}}
 
@@ -243,15 +238,18 @@ void ocbtnp()                                   // on-control-button-pressed
 #define STATE_ERROR             '!'
 #define STATE_FORCE_ON          '+'
 #define STATE_FORCE_OFF         '-'
+#define STATE_WAITING           '*'
 #define STATE_TESTING           '?'
 #define STATE_PUMPING           '@'
-#define STATE_WAITING           '*'
 
 char           state;
 unsigned short strtc;
-unsigned short ltlvl;
-unsigned short darkc;
-unsigned short pumpc;
+
+unsigned short lolic;
+unsigned short hilic;
+
+// safely increments an unsigned short counter until its maximum
+#define usinc( cnt ) (cnt = (cnt < USHRT_MAX) ? cnt + 1 : USHRT_MAX)
 
 // sets the current processing state to the specified new state.
 // Initializes variables related to the new state.  The new state
@@ -263,14 +261,6 @@ void setstate( char newstate )
   switch ( state ) {
   case STATE_STARTING:
     strtc = 0;
-    break;
-
-  case STATE_TESTING:
-    pumpc = 0;
-    break;
-
-  case STATE_WAITING:
-    ltlvl = 0;
     break;
   }
 }
@@ -415,9 +405,9 @@ void updtlog( int temps, int tempr, int tempt, int light )
   lfile.print( ',' );
   lfile.print( light );
   lfile.print( ',' );
-  lfile.print( (state == STATE_TESTING) ? pumpc : 0 );
+  lfile.print( lolic );
   lfile.print( ',' );
-  lfile.print( (state == STATE_WAITING) ? ltlvl : 0 );
+  lfile.print( hilic );
   lfile.print( ',' );
   lfile.print( fldss );
   lfile.print( ',' );
@@ -568,10 +558,10 @@ void updtlcd( int temps, int tempr, int tempt, int light )
   // format: "sNNNNrNNNNcNNNN "
   lcddec( row,  0, 's', temps );
   lcddec( row,  5, 'r', tempr );
-  if ( (state == STATE_TESTING) )
-  lcddec( row, 10, 'c', pumpc );
-  else if ( (state == STATE_WAITING) )
-  lcddec( row, 10, 'c', ltlvl );
+  if ( (state == STATE_WAITING) )
+  lcddec( row, 10, 'c', hilic );
+  else if ( (state == STATE_TESTING) )
+  lcddec( row, 10, 'c', lolic );
   else {
           row[ 10] = ' ';
           row[ 11] = ' ';
@@ -620,6 +610,8 @@ void setup()
 
   // initialize state
   setstate( STATE_STARTING );
+  lolic = 0;
+  hilic = 0;
 
   // detect restarts after upload and initialize EEPROM
   // otherwise.  Note that the EEPROM is NOT reset to all 0xff
@@ -763,15 +755,15 @@ void loop()
   int light = analogRead( INPUT_LIGHT_SENSOR );
   if ( light < 0 ) light = 0;
 
-  // update darkness counter
-  if ( 0 )
-    ; // alignment no-op
-  else if ( (light == 0) && (darkc < USHRT_MAX) )
-    darkc++;
-  else if ( (light == 0) )
-    ; // no-op
+  // update light counters
+  if ( light < LIGHT_LEVEL_LOW )
+    usinc( lolic );
   else
-    darkc = 0;
+    lolic = 0;
+  if ( light >= LIGHT_LEVEL_HIGH )
+    usinc( hilic );
+  else
+    hilic = 0;
 
   // determine new state
   switch ( state ) {
@@ -791,7 +783,6 @@ void loop()
     else {
       attachInterrupt( digitalPinToInterrupt( INPUT_CONTROL_BUTTON ),
                        ocbtnp, FALLING );
-      updtlog( 0, 0, 0, 0 );
       setstate( STATE_WAITING );
     }
     break;
@@ -819,6 +810,18 @@ void loop()
     }
     break;
 
+  case STATE_WAITING:
+    if ( (! okp( SUBSYS_CRITICAL )) ) {
+      setstate( STATE_ERROR );
+    }
+    else if ( cbtnp ) {
+      cbtnp = false;
+      setstate( STATE_FORCE_ON );
+    }
+    else if ( hilic >= HIGH_LIGHT_CHECK_CYCLES )
+      setstate( STATE_TESTING );
+    break;
+
   case STATE_TESTING:
     if ( (! okp( SUBSYS_CRITICAL )) ) {
       setstate( STATE_ERROR );
@@ -827,15 +830,10 @@ void loop()
       cbtnp = false;
       setstate( STATE_WAITING );
     }
-    else if ( pumpc < TEST_PUMP_CYCLES ) {
-      pumpc++;
-    }
-    else if ( temps - tempt < TEMP_DELTA ) {
+    else if ( lolic >= LOW_LIGHT_CHECK_CYCLES )
       setstate( STATE_WAITING );
-    }
-    else {
+    else if ( temps - tempt >= TEMP_DELTA_HIGH )
       setstate( STATE_PUMPING );
-    }
     break;
 
   case STATE_PUMPING:
@@ -846,33 +844,7 @@ void loop()
       cbtnp = false;
       setstate( STATE_WAITING );
     }
-    else if ( temps - tempt < TEMP_DELTA ) {
-      setstate( STATE_WAITING );
-    }
-    break;
-
-  case STATE_WAITING:
-    if ( (! okp( SUBSYS_CRITICAL )) ) {
-      setstate( STATE_ERROR );
-    }
-    else if ( cbtnp ) {
-      cbtnp = false;
-      setstate( STATE_FORCE_ON );
-    }
-    else if ( ltlvl < PUMP_LIGHT_LEVEL ) {
-      if ( false )
-        ; // alignment no-op
-      else if ( (darkc >= NIGHT_CYCLES) &&
-                (ltlvl >  0) )
-        ltlvl--;
-      else if ( (darkc >= NIGHT_CYCLES) )
-        ; // no-op
-      else if ( (tempt >= 100) )
-        ltlvl += light / (tempt / 100);
-      else
-        ltlvl += light;
-    }
-    else {
+    else if ( temps - tempt < TEMP_DELTA_LOW ) {
       setstate( STATE_TESTING );
     }
     break;
