@@ -123,8 +123,8 @@ Absperrventil, das im Folgenden "Bypasshandventil" genannt wird.
 Der größte Teil des [Sketches](src/solarcontrol.ino) besteht aus
 langweiligem Haushalten mit Fehlerbehandlung, SD Card Logging und
 der Anzeige des aktuellen Zustands im LCD.  Der eigentliche
-Pumpenalgorithmus ist in den beiden Zweigen `case STATE_WAITING`
-und `case STATE_PUMPING` der State Machine in der Funktion `loop`
+Pumpenalgorithmus ist in den Zweigen nach dem Zweig `case
+STATE_FORCE_OFF` der State Machine in der Funktion `loop`
 implementiert.
 
 Vereinfacht gesagt "sammelt" die State Machine im Status
@@ -137,3 +137,53 @@ mindestens `TEMP_DELTA` (aktuell: 2.5&deg;C) beträgt.  Fällt die
 Differenz unter `TEMP_DELTA`, so wechselt die State Machine
 wieder in den Status `STATE_WAITING`, wobei sie dabei die
 gesammelte Lichtmenge auf Null zurücksetzt.
+
+## Entwicklungen und Erkenntnisse
+
+### Organisatorisches
+
+- Von Anfang an alle Änderungen gut dokumentieren, sowohl in der
+  Hardware als auch in der Software.
+
+- Bei der Versionierung der Software sich nicht nur auf git (oder
+  was auch immer) verlassen, sondern besser jeden einzelnen
+  Upload auf den Arduino als eigenständige Version wegsichern.
+  Damit hat man auch für die "eben mal schnell" Änderungen eine
+  lückenlose Dokumentation.  Mit einer geeigneten Erweiterung des
+  [Arduino Makefiles](https://github.com/sudar/Arduino-Makefile)
+  lässt sich das elegant automatisieren.
+
+- Die aktuelle Versionsnummer oder Uploadnummer des Sketches auch
+  in den Logfiles hinterlegen, falls man denn welche schreibt.
+  Damit kann man später besser nachvollziehen, wie die Werte in
+  den Logfiles genau zu Stande gekommen sind.
+
+### Positionierung der Fotodiode
+
+Am Anfang hing die Fotodiode nur irgendwie herum, und die Kurve
+der Lichtintensität über den Tag sah entsprechend aus:
+
+![Fotodiode suboptimal 1](assets/photodiode-1.png?raw=true)
+
+Dann habe ich sie mal irgendwie anders hingedreht:
+
+![Fotodiode suboptimal 2](assets/photodiode-2.png?raw=true)
+
+Und mich schließlich dazu entschlossen, den bestehenden
+Schrumpfschlauch doch mal abzumachen und zu schauen, was das für
+eine Fotodiode ist und welche Position sie idealerweise haben
+sollte.  Nach der vorläufig finalen Positionierung sah die Kurve
+der Lichtintensität dann so aus:
+
+![Fotodiode fast optimal](assets/photodiode-3.png?raw=true)
+
+An diesem Tag stand die Sonne gegen 13:30 im Zenit, insofern
+passt das Maximum der Lichtintensität schon wesentlich besser zur
+Realität.
+
+Da die Siliziumfotodiode ihre Empfindlichkeit doch eher im
+sichtbaren Licht und weniger im Infrarotbereich hat, habe ich den
+neuen Schrumpfschlauch an der Sensorstelle gelocht, um möglichst
+viel vom Infrarot mitzunehmen:
+
+![Fotodiode entblättert](assets/dsc_0014.jpg?raw=true)
